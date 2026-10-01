@@ -1,16 +1,16 @@
 const defaultState={
  view:'sales', selectedProgram:null, selectedSlot:null, paid:false, parentName:'Sarah', childName:'Alex', childPhoto:null,
- email:'', phone:'', attendance:7,totalSessions:8,rewardPoints:350, votes:{Alex:0,Noah:0,Liam:0,Maya:0},userVote:null,publishedMVP:null,managerOverride:null,
- economics:'parent', consent:false, privacyOpen:false,
+ email:'', phone:'', attendance:7,totalSessions:8,rewardPoints:300, votes:{Alex:0,Noah:0,Liam:0,Maya:0},userVote:null,publishedMVP:null,managerOverride:null,
+ economics:'parent', consent:false, privacyOpen:false, attendanceByProgram:{}, currentCheckinDate:null,
  rewards:[{id:1,name:'Sports Drink',description:'Cold drink after practice',cost:5,image:''},{id:2,name:'Snack',description:'Post-session snack',cost:8,image:''}],
- ledger:[{date:'Today',description:'Attendance bonus',amount:50,type:'earned'},{date:'Today',description:'Effort bonus',amount:50,type:'earned'},{date:'Yesterday',description:'Teamwork bonus',amount:25,type:'earned'},{date:'Yesterday',description:'Reward purchase — Sports Drink',amount:-5,type:'spent'}],
+ ledger:[{date:'Today',description:'Effort bonus',amount:50,type:'earned'},{date:'Yesterday',description:'Teamwork bonus',amount:25,type:'earned'},{date:'Yesterday',description:'Reward purchase — Sports Drink',amount:-5,type:'spent'}],
  programs:[
-  {id:1,name:'Saturday Soccer — U10',sport:'Soccer',sessions:8,price:500,venue:'Oakville Sports Centre',details:'Skills, small-sided games and development.',slots:[{id:'sat-am',label:'Saturdays • 10:00–11:00 AM',spots:8,capacity:12},{id:'sat-pm',label:'Saturdays • 2:00–3:00 PM',spots:4,capacity:12}]},
-  {id:2,name:'Tuesday Skills — U8/U10',sport:'Soccer',sessions:8,price:500,venue:'Burlington Indoor Field',details:'Technical skills, movement and game play.',slots:[{id:'tue-pm',label:'Tuesdays • 5:00–6:00 PM',spots:6,capacity:10},{id:'thu-pm',label:'Thursdays • 5:30–6:30 PM',spots:9,capacity:10}]}
+  {id:2,name:'Tuesday Skills — U8/U10',sport:'Soccer',sessions:8,price:500,attendancePayback:100,venue:'Burlington Indoor Field',details:'Technical skills, movement and game play.',slots:[{id:'tue-pm',label:'Tuesdays • 5:00–6:00 PM',spots:6,capacity:10},{id:'thu-pm',label:'Thursdays • 5:30–6:30 PM',spots:9,capacity:10}]}
  ],
  players:[{name:'Alex',photo:null},{name:'Noah',photo:null},{name:'Liam',photo:null},{name:'Maya',photo:null}]
 };
 const saved=localStorage.getItem('dailyRollMVP'); const state=Object.assign(defaultState,saved?JSON.parse(saved):{});
+(state.programs||[]).forEach(p=>{if(p.name==='Tuesday Skills — U8/U10' && (p.attendancePayback===undefined||p.attendancePayback===null))p.attendancePayback=100;});
 
 // ---- Supabase connection ----
 const SUPABASE_URL = 'https://pzgzzbjeyrxpuqkuizyr.supabase.co';
@@ -31,16 +31,20 @@ async function pullSupabaseData(){
   if(!supabaseClient) return;
   try {
     const [{data: programs}, {data: rewards}, {data: sessions}] = await Promise.all([
-      supabaseClient.from('programs').select('id,name,sport,sessions,price,schedule,details,spots,venue_id,venues(name)').order('created_at'),
+      supabaseClient.from('programs').select('id,name,sport,sessions,price,attendance_payback,schedule,details,spots,venue_id,manager_id,venues(name)').order('created_at'),
       supabaseClient.from('rewards').select('id,name,description,cost,icon,image_url').eq('active',true).order('created_at'),
       supabaseClient.from('sessions').select('id,name,sport,session_date,start_time,end_time,status,description,max_players,program_id,venue_id,programs(name),venues(name)').order('session_date',{ascending:false})
     ]);
     if(programs && programs.length){
       state.programs = programs.map((p,i)=>({
-        id:i+1, dbId:p.id, name:p.name, sport:p.sport, sessions:p.sessions||8, price:Number(p.price||0),
+        id:i+1, dbId:p.id, managerId:p.manager_id||null, name:p.name, sport:p.sport, sessions:p.sessions||8, price:Number(p.price||0), attendancePayback:Number(p.attendance_payback||0),
         venue:p.venues?.name||'Burlington Indoor Field', details:p.details||'',
         slots:[{id:'db-'+p.id,label:p.schedule||'Schedule to be announced',spots:p.spots??0,capacity:p.spots??0}]
       }));
+    }
+    if(programs && programs.length){
+      const mids=[...new Set(programs.map(p=>p.manager_id).filter(Boolean))];
+      if(mids.length){const mq=await supabaseClient.from('profiles').select('id,name').in('id',mids);if(!mq.error){const names=Object.fromEntries((mq.data||[]).map(x=>[x.id,x.name]));state.programs=state.programs.map(p=>({...p,managerName:names[p.managerId]||'Program manager'}));}}
     }
     if(rewards && rewards.length){
       state.rewards = rewards.map((r,i)=>({id:i+1,dbId:r.id,name:r.name,description:r.description||'',cost:r.cost,icon:r.icon||'🎁',image:r.image_url||''}));
@@ -85,108 +89,11 @@ function shell(content){return `<header class="topbar"><div class="brand"><div c
 function render(){document.getElementById('app').innerHTML=shell(state.view==='sales'?sales():state.view==='parent'?parent():state.view==='kid'?kid():manager());}
 function sales(){return `<section class="hero"><div><span class="pill">Kids sports programs</span><h1>Kids play.<br>Kids improve.<br>Kids earn.</h1><p>Choose a program, pick a convenient session time, and let your child earn through attendance, effort and rewards.</p><button class="btn green" onclick="document.getElementById('programs').scrollIntoView({behavior:'smooth'})">See available programs</button></div><div class="hero-card"><div class="small">PROGRAM PRICE</div><div class="price">$500</div><p>Up to <b>$100 back</b> for attendance + <b>$50 reward allocation</b> for the child.</p><div class="statrow"><span>Sessions</span><b>8</b></div><div class="statrow"><span>Attendance-back</span><b>$100</b></div><div class="statrow"><span>Kid rewards</span><b>$50</b></div></div></section><div id="programs" class="section-title"><div><h2>Choose your program</h2><span class="muted">Click a program to see the schedule and location.</span></div></div><div class="grid">${state.programs.map(pr=>programCard(pr)).join('')}</div>${state.selectedProgram&&state.selectedSlot?checkout(state.programs.find(x=>x.id===state.selectedProgram)):''}`}
 function programCard(pr){const selected=state.selectedProgram===pr.id;return `<div class="card program-card ${selected?'selected-program':''}"><span class="tag">${pr.sport}</span><h3 style="margin-top:10px">${pr.name}</h3><p class="muted">${pr.sessions} sessions • ${money(pr.price)}</p><p>${pr.details}</p><div class="venue"><b>📍 ${pr.venue}</b><span class="small muted">${selected?'Schedule shown below':'Click to view schedule'}</span></div>${selected?`<div class="schedule-detail">${pr.slots.map(sl=>`<button class="choice ${state.selectedSlot===sl.id?'selected':''}" onclick="selectSlot(${pr.id},'${sl.id}')"><strong>${sl.label}</strong><small>${sl.spots} spots left</small></button>`).join('')}</div><button class="btn light" style="width:100%;margin-top:10px" onclick="deselectProgram()">Deselect program</button>`:`<button class="btn blue" style="width:100%" onclick="selectProgram(${pr.id})">View schedule & select</button>`}</div>`}
-function checkout(p){const sl=p.slots.find(x=>x.id===state.selectedSlot);return `<div class="section-title"><div><h2>Reserve your spot</h2><span class="muted">One simple checkout. Contact details are collected at the bottom.</span></div></div><div class="checkout-layout"><div class="card"><h3>${p.name}</h3><p class="muted">${sl.label} • ${p.venue}</p><div class="formgrid"><div><div class="label">Parent name</div><input class="input" id="parent" value="${state.parentName}"></div><div><div class="label">Child name</div><input class="input" id="child" value="${state.childName}"></div><div><div class="label">Email</div><input class="input" id="email" type="email" value="${state.email}" placeholder="you@example.com"></div><div><div class="label">Phone</div><input class="input" id="phone" type="tel" value="${state.phone}" placeholder="416-555-1234"></div></div><div class="notice" style="margin-top:18px">Child photo can be added later from the parent profile. It is not required to join.</div></div><div class="card sticky-summary"><h3>Payment summary</h3><div class="statrow"><span>Program</span><b>${money(p.price)}</b></div><div class="statrow"><span>Attendance-back potential</span><b>$100</b></div><div class="statrow"><span>Child reward allocation</span><b>$50</b></div><div class="divider"></div><div class="statrow total"><span>Total today</span><b>${money(p.price)}</b></div><button class="btn green" style="width:100%;margin-top:14px" onclick="openPrivacy()">Continue to payment</button><p class="small muted">Before payment, you will review and acknowledge the privacy/video terms.</p></div></div>`}
+function checkout(p){const sl=p.slots.find(x=>x.id===state.selectedSlot);return `<div class="section-title"><div><h2>Reserve your spot</h2><span class="muted">One simple checkout. Contact details are collected at the bottom.</span></div></div><div class="checkout-layout"><div class="card"><h3>${p.name}</h3><p class="muted">${sl.label} • ${p.venue}</p><div class="formgrid"><div><div class="label">Parent name</div><input class="input" id="parent" value="${state.parentName}"></div><div><div class="label">Child name</div><input class="input" id="child" value="${state.childName}"></div><div><div class="label">Email</div><input class="input" id="email" type="email" value="${state.email}" placeholder="you@example.com"></div><div><div class="label">Phone</div><input class="input" id="phone" type="tel" value="${state.phone}" placeholder="416-555-1234"></div></div><div class="notice" style="margin-top:18px">Child photo can be added later from the parent profile. It is not required to join.</div></div><div class="card sticky-summary"><h3>Payment summary</h3><div class="statrow"><span>Program</span><b>${money(p.price)}</b></div><div class="statrow"><span>Attendance payback</span><b>${money(p.attendancePayback||0)}</b></div><div class="statrow"><span>Child reward allocation</span><b>$50</b></div><div class="divider"></div><div class="statrow total"><span>Total today</span><b>${money(p.price)}</b></div><button class="btn green" style="width:100%;margin-top:14px" onclick="openPrivacy()">Continue to payment</button><p class="small muted">Before payment, you will review and acknowledge the privacy/video terms.</p></div></div>`}
 function privacyModal(){return `<div class="modal-backdrop"><div class="modal"><div class="modal-head"><div><span class="pill">Required acknowledgement</span><h2>Privacy & video acknowledgement</h2></div><button class="icon-btn" onclick="closePrivacy()">×</button></div><p>The Daily Roll may use cameras and AI video processing during sessions to provide session recordings, live viewing and, in the future, child-specific highlights.</p><p class="muted">This MVP uses a placeholder acknowledgement. Before launch, this should link to your final privacy policy, consent language and applicable legal terms.</p><div class="policy-box"><b>What you're acknowledging</b><ul><li>Session video may be recorded and processed.</li><li>Authorized family members may access session video.</li><li>Future AI features may analyze session footage.</li></ul><label class="check"><input type="checkbox" ${state.consent?'checked':''} onchange="state.consent=this.checked;save();render()"> I acknowledge the privacy/video terms and want to continue.</label></div><button class="btn green" style="width:100%" ${state.consent?'':'disabled'} onclick="continueToPayment()">Proceed to payment</button></div></div>`}
 function parent(){const earned=state.ledger.filter(x=>x.type==='earned').reduce((a,x)=>a+x.amount,0),spent=Math.abs(state.ledger.filter(x=>x.type==='spent').reduce((a,x)=>a+x.amount,0));return `<div class="section-title"><div><span class="pill">Parent portal</span><h2>Welcome, ${state.parentName} 👋</h2></div><button class="btn light" onclick="setView('sales')">Browse programs</button></div><div class="grid"><div class="card"><div class="player"><img class="photo" src="${state.childPhoto||''}" onerror="this.style.display='none'"/><div><h3>${state.childName}</h3><div class="muted">U10 Soccer • Saturday program</div></div></div><div class="statrow"><span>Attendance</span><b>${state.attendance}/${state.totalSessions}</b></div><div class="progress"><div style="width:${state.attendance/state.totalSessions*100}%"></div></div><div class="statrow"><span>Points</span><b>${state.rewardPoints}</b></div></div><div class="card"><h3>Program economics</h3><div class="money">$500 paid</div><p class="muted">Choose where the attendance-back is paid. This choice can only be changed before the program starts.</p><div class="radio-stack"><label><input type="radio" name="econ" ${state.economics==='parent'?'checked':''} onchange="setEconomics('parent')"> Pay back to parent</label><label><input type="radio" name="econ" ${state.economics==='kid'?'checked':''} onchange="setEconomics('kid')"> Pay directly to kid</label></div><div class="success" style="margin-top:12px">Current projection: <b>${state.attendance===state.totalSessions?'$100':money(Math.round(100*state.attendance/state.totalSessions))} back</b> → ${state.economics==='kid'?'Kid':'Parent'}</div></div><div class="card"><h3>Next session</h3><p><b>Saturday • 10:00 AM</b></p><p class="muted">Soccer Skills • Oakville Sports Centre</p><button class="btn blue" onclick="openVideo()">Watch / live session</button></div></div><div class="grid2"><div class="card"><h3>Session video</h3><p class="muted">Full-session video can live here. You can download the full recording or watch a live session when available.</p><div class="video-placeholder"><div>▶</div><span>Session video / live stream</span></div><div class="button-row"><button class="btn blue" onclick="openVideo()">Watch full session</button><button class="btn light" onclick="toast('Demo: full session download would start here.')">Download full video</button></div></div><div class="card"><h3>Rewards</h3><div class="money">${state.rewardPoints} points</div><p class="muted">1 point = $1 of reward value.</p><button class="btn green" onclick="openRewardsInfo()">View rewards</button><div class="small muted" style="margin-top:10px">Earned: ${earned} • Spent: ${spent}</div></div></div>`}
-function kid(){return `<div class="section-title"><div><span class="pill">Team iPad</span><h2>Hey ${state.childName}! 👋</h2><p class="muted">Check in, see today's summary, vote and spend your points.</p></div></div><div class="grid"><div class="card checkin-card"><h3>Today's check-in</h3><div class="big-check">✓</div><b>${state.childName} is checked in</b><p class="muted">Saturday Soccer • 10:00 AM</p><button class="btn light" onclick="toast('Demo: check-in status updated.')">Check in / out</button></div><div class="card"><h3>Rewards wallet</h3><div class="money">${state.rewardPoints} ⭐</div><p class="muted">1 point = $1</p><button class="btn green" onclick="openSpend()">Spend points</button><div class="ledger">${state.ledger.slice().reverse().map(x=>`<div class="ledger-row"><div><b>${x.description}</b><div class="small muted">${x.date}</div></div><b class="${x.type==='spent'?'spent':'earned'}">${x.amount>0?'+':''}${x.amount}</b></div>`).join('')}</div></div><div class="card"><h3>🏆 MVP voting</h3><p class="muted">Vote for the teammate who tried the hardest today. Your vote is private.</p><div class="vote-grid">${state.players.filter(x=>x.name!==state.childName).map(x=>`<button class="vote-card ${state.userVote===x.name?'selected':''}" onclick="castVote('${x.name}')"><div style="font-size:32px">⚽</div><b>${x.name}</b>${state.userVote===x.name?'<div class="small" style="color:var(--purple);margin-top:5px">Your vote</div>':''}</button>`).join('')}</div><button class="btn blue" style="margin-top:15px;width:100%" ${state.userVote?'disabled':''} onclick="submitVote()">Submit my vote</button><div class="small muted" style="margin-top:10px">No voting history is shown to kids.</div></div></div><div class="card"><h3>Today summary</h3><div class="grid compact"><div><b>Attendance</b><p>+50 ⭐</p></div><div><b>Effort</b><p>+50 ⭐</p></div><div><b>Teamwork</b><p>+25 ⭐</p></div><div><b>MVP</b><p>+25 ⭐</p></div></div></div>`}
-function manager(){return `<div class="section-title"><div><span class="pill">Owner / manager</span><h2>The Daily Roll Dashboard</h2></div><button class="btn green" onclick="setView('sales')">View customer page</button></div><div class="grid"><div class="card"><div class="muted">Program revenue</div><div class="kpi">${state.paid?'$500':'$0'}</div></div><div class="card"><div class="muted">Active kids</div><div class="kpi">${state.paid?'1':'0'}</div></div><div class="card"><div class="muted">Break-even model</div><div class="kpi">25 kids</div><div class="small muted">Example contribution model</div></div></div><div class="grid2"><div class="card"><h3>Program builder</h3><p class="muted">Add or edit programs, locations, session times and availability. Changes appear on the public Join a Program page.</p><div class="formgrid"><div><div class="label">Program name</div><input class="input" id="mName" placeholder="Saturday Soccer — U10"></div><div><div class="label">Sport</div><input class="input" id="mSport" placeholder="Soccer"></div><div><div class="label">Location</div><input class="input" id="mVenue" placeholder="Oakville Sports Centre"></div><div><div class="label">Session price</div><input class="input" id="mPrice" type="number" value="500"></div><div class="full"><div class="label">Schedule / details</div><input class="input" id="mSchedule" placeholder="Saturdays • 10:00–11:00 AM"></div></div><button class="btn green" style="margin-top:12px" onclick="addProgram()">Add program</button></div><div class="card"><h3>Reward catalog</h3><p class="muted">Add a reward with a picture, description and points cost.</p><div class="formgrid"><div><div class="label">Reward</div><input class="input" id="rName" placeholder="Sports Drink"></div><div><div class="label">Points cost</div><input class="input" id="rCost" type="number" value="5"></div><div class="full"><div class="label">Description</div><input class="input" id="rDesc" placeholder="Cold drink after practice"></div><div class="full"><div class="label">Picture</div><input class="input" id="rImage" type="file" accept="image/*" onchange="previewRewardImage(event)"></div></div><button class="btn green" style="margin-top:12px" onclick="addReward()">Add reward</button><div class="catalog">${state.rewards.map(r=>`<div class="catalog-row">${r.image?`<img src="${r.image}"/>`:'<div class="thumb">🎁</div>'}<div><b>${r.name}</b><div class="small muted">${r.description}</div></div><strong>${r.cost} pts</strong></div>`).join('')}</div></div></div><div class="grid2" style="margin-top:18px"><div class="card"><h3>Current session — MVP voting</h3><p class="muted">Manager sees the tally and can override before publishing. Kids never see the voting log.</p>${mvpTable()}</div><div class="card"><h3>Client & program</h3><div class="player"><div class="photo">⚽</div><div><b>${state.childName}</b><div class="muted">${state.parentName} • Saturday Soccer</div></div></div><div class="statrow"><span>Payment</span><b>${state.paid?'Paid $500':'Not paid'}</b></div><div class="statrow"><span>Attendance</span><b>${state.attendance}/${state.totalSessions}</b></div><div class="statrow"><span>Reward points</span><b>${state.rewardPoints}</b></div><h3 style="margin-top:20px">Quick actions</h3><button class="btn light" style="width:100%;margin-bottom:8px" onclick="adjustAttendance()">Simulate attendance</button><button class="btn light" style="width:100%" onclick="resetDemo()">Reset demo</button></div></div><div class="card" style="margin-top:18px"><div class="section-title" style="margin-bottom:12px"><div><h3 style="margin:0">Sessions</h3><span class="small muted">Sessions are stored in Supabase. Deleting a session also removes its RSVP, check-in, attendance, votes and video records.</span></div></div>${state.sessions&&state.sessions.length?state.sessions.map(s=>`<div class="session-admin-row"><div><b>${s.name}</b><div class="small muted">${s.date} • ${s.start}–${s.end} • ${s.venue}</div><div class="small muted">${s.program} • <span class="pill">${s.status}</span></div></div><button class="btn danger" onclick="deleteSession('${s.dbId}')">Delete</button></div>`).join(''):`<div class="notice">No sessions found.</div>`}</div><div class="card" style="margin-top:18px">
-  <div class="section-title" style="margin-bottom:12px">
-    <div>
-      <h3 style="margin:0">Sessions</h3>
-      <span class="small muted">Create and manage your program sessions.</span>
-    </div>
-    <button class="btn green" onclick="showSessionForm()">+ Add Session</button>
-  </div>
-
-  <div id="sessionForm" style="display:none;margin-bottom:18px">
-    <div class="notice">
-      <h3 style="margin-top:0">New Session</h3>
-
-      <div class="formgrid">
-        <div>
-          <div class="label">Session name</div>
-          <input class="input" id="sName" placeholder="Saturday Soccer — U10">
-        </div>
-
-        <div>
-          <div class="label">Program</div>
-          <select class="input" id="sProgram">
-            <option value="">Select program</option>
-            ${state.programs.map(p=>`
-              <option value="${p.dbId||p.id}">${p.name}</option>
-            `).join('')}
-          </select>
-        </div>
-
-        <div>
-          <div class="label">Venue</div>
-          <input class="input" id="sVenue" placeholder="Burlington Indoor Field">
-        </div>
-
-        <div>
-          <div class="label">Date</div>
-          <input class="input" id="sDate" type="date">
-        </div>
-
-        <div>
-          <div class="label">Start time</div>
-          <input class="input" id="sStart" type="time">
-        </div>
-
-        <div>
-          <div class="label">End time</div>
-          <input class="input" id="sEnd" type="time">
-        </div>
-
-        <div>
-          <div class="label">Status</div>
-          <select class="input" id="sStatus">
-            <option value="draft">Draft</option>
-            <option value="committed">Committed</option>
-            <option value="in_progress">In Progress</option>
-            <option value="completed">Completed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
-        </div>
-
-        <div>
-          <div class="label">Maximum players</div>
-          <input class="input" id="sMaxPlayers" type="number" value="12">
-        </div>
-
-        <div class="full">
-          <div class="label">Description</div>
-          <input class="input" id="sDescription" placeholder="Skills, small-sided games and development.">
-        </div>
-      </div>
-
-      <div class="button-row" style="margin-top:12px">
-        <button class="btn green" onclick="createSession()">Save Session</button>
-        <button class="btn light" onclick="hideSessionForm()">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  ${state.sessions&&state.sessions.length
-    ?state.sessions.map(s=>`
-      <div class="session-admin-row">
-        <div>
-          <b>${s.name}</b>
-          <div class="small muted">
-            ${s.date} • ${s.start}–${s.end} • ${s.venue}
-          </div>
-          <div class="small muted">
-            ${s.program} • <span class="pill">${s.status}</span>
-          </div>
-        </div>
-
-        <button class="btn danger" onclick="deleteSession('${s.dbId}')">
-          Delete
-        </button>
-      </div>
-    `).join('')
-    :`<div class="notice">No sessions found. Click + Add Session to create one.</div>`}
-</div><div class="card" style="margin-top:18px"><h3>Video</h3><p class="muted">Future phase: connect a live camera stream, session recordings and optional AI highlight processing.</p></div>`}
+function kid(){const enrolled=publicPrograms().filter(p=>state.enrolledPrograms.some(x=>String(x.program_id)===String(p.dbId||p.id)));const pr=currentTrackedProgram();const a=pr?attendanceProgress(pr):{attended:0,total:0,payback:0,qualified:false,payoutIssued:false,destination:state.economics};const spentPoints=Math.abs((state.ledger||[]).filter(x=>x.type==='spent').reduce((a,x)=>a+x.amount,0));return `<div class="section-title"><div><span class="pill">Kid view</span><h2>Hey ${state.childName}! 👋</h2><p class="muted">Your programs, schedule, rewards and attendance payback.</p></div></div><div class="card"><button class="program-collapse" onclick="toggleProgram('kid-programs')"><span><b>My programs</b><span class="small muted">${enrolled.length} registered</span></span><span>${state.expandedPrograms['kid-programs']?'−':'+'}</span></button>${state.expandedPrograms['kid-programs']?`<div class="program-expanded">${enrolled.map(p=>programSummary(p,state.children[0]?.id)).join('')||'<div class="notice">No programs are registered yet.</div>'}</div>`:''}</div><div class="grid"><div class="card checkin-card"><h3>Today's check-in</h3><div class="big-check">✓</div><b>${state.childName} ${state.currentCheckinDate===new Date().toISOString().slice(0,10)?'is checked in':'is ready to check in'}</b><div class="statrow" style="margin-top:10px"><span>Attendance</span><b>${a.attended}/${a.total}</b></div><button class="btn light" onclick="kidCheckIn()">Check in for this session</button></div><div class="card"><h3>Rewards wallet</h3><div class="money">${state.rewardPoints} ⭐</div><p class="muted">1 point = $1</p><div class="statrow"><span>Attendance payback</span><b>${a.payoutIssued?(a.destination==='kid'?`+${a.payback} ⭐`:`${money(a.payback)} to parent`):(a.qualified&&a.destination==='kid'?`+${a.payback} ⭐`:'Pending')}</b></div><div class="small muted" style="margin-top:8px">${a.attended}/${a.total} sessions attended. ${a.payoutIssued?`The ${money(a.payback)} attendance payback has been awarded ${a.destination==='kid'?'to your wallet':'to the parent'}.`:`Complete ${a.total} sessions to unlock the ${money(a.payback)} total attendance payback.`}</div><div class="small muted" style="margin-top:6px">Spent: ${spentPoints} ⭐</div><button class="btn green" style="margin-top:12px" onclick="openSpend()">Spend points</button></div><div class="card"><h3>🏆 MVP voting</h3><p class="muted">Vote for the teammate who tried the hardest today.</p>${state.players.filter(x=>x.name!==state.childName).map(x=>`<button class="vote-card ${state.userVote===x.name?'selected':''}" onclick="castVote('${x.name}')"><b>${x.name}</b></button>`).join('')}<button class="btn blue" style="margin-top:12px;width:100%" ${state.userVote?'disabled':''} onclick="submitVote()">Submit vote</button></div></div>`}
+function manager(){return `<div class="section-title"><div><span class="pill">Owner / manager</span><h2>The Daily Roll Dashboard</h2></div><button class="btn green" onclick="setView('sales')">View customer page</button></div><div class="grid"><div class="card"><div class="muted">Program revenue</div><div class="kpi">${state.paid?'$500':'$0'}</div></div><div class="card"><div class="muted">Active kids</div><div class="kpi">${state.paid?'1':'0'}</div></div><div class="card"><div class="muted">Break-even model</div><div class="kpi">25 kids</div><div class="small muted">Example contribution model</div></div></div><div class="grid2"><div class="card"><h3>Program builder</h3><p class="muted">Add or edit programs, locations, session times and availability. Changes appear on the public Join a Program page.</p><div class="formgrid"><div><div class="label">Program name</div><input class="input" id="mName" placeholder="Saturday Soccer — U10"></div><div><div class="label">Sport</div><input class="input" id="mSport" placeholder="Soccer"></div><div><div class="label">Location</div><input class="input" id="mVenue" placeholder="Oakville Sports Centre"></div><div><div class="label">Session price</div><input class="input" id="mPrice" type="number" value="500"></div><div class="full"><div class="label">Schedule / details</div><input class="input" id="mSchedule" placeholder="Saturdays • 10:00–11:00 AM"></div></div><button class="btn green" style="margin-top:12px" onclick="addProgram()">Add program</button></div><div class="card"><h3>Reward catalog</h3><p class="muted">Add a reward with a picture, description and points cost.</p><div class="formgrid"><div><div class="label">Reward</div><input class="input" id="rName" placeholder="Sports Drink"></div><div><div class="label">Points cost</div><input class="input" id="rCost" type="number" value="5"></div><div class="full"><div class="label">Description</div><input class="input" id="rDesc" placeholder="Cold drink after practice"></div><div class="full"><div class="label">Picture</div><input class="input" id="rImage" type="file" accept="image/*" onchange="previewRewardImage(event)"></div></div><button class="btn green" style="margin-top:12px" onclick="addReward()">Add reward</button><div class="catalog">${state.rewards.map(r=>`<div class="catalog-row">${r.image?`<img src="${r.image}"/>`:'<div class="thumb">🎁</div>'}<div><b>${r.name}</b><div class="small muted">${r.description}</div></div><strong>${r.cost} pts</strong></div>`).join('')}</div></div></div><div class="grid2" style="margin-top:18px"><div class="card"><h3>Current session — MVP voting</h3><p class="muted">Manager sees the tally and can override before publishing. Kids never see the voting log.</p>${mvpTable()}</div><div class="card"><h3>Client & program</h3><div class="player"><div class="photo">⚽</div><div><b>${state.childName}</b><div class="muted">${state.parentName} • Saturday Soccer</div></div></div><div class="statrow"><span>Payment</span><b>${state.paid?'Paid $500':'Not paid'}</b></div><div class="statrow"><span>Attendance</span><b>${state.attendance}/${state.totalSessions}</b></div><div class="statrow"><span>Reward points</span><b>${state.rewardPoints}</b></div><h3 style="margin-top:20px">Quick actions</h3><button class="btn light" style="width:100%;margin-bottom:8px" onclick="adjustAttendance()">Simulate attendance</button><button class="btn light" style="width:100%" onclick="resetDemo()">Reset demo</button></div></div><div class="card" style="margin-top:18px"><div class="section-title" style="margin-bottom:12px"><div><h3 style="margin:0">Sessions</h3><span class="small muted">Sessions are stored in Supabase. Deleting a session also removes its RSVP, check-in, attendance, votes and video records.</span></div></div>${state.sessions&&state.sessions.length?state.sessions.map(s=>`<div class="session-admin-row"><div><b>${s.name}</b><div class="small muted">${s.date} • ${s.start}–${s.end} • ${s.venue}</div><div class="small muted">${s.program} • <span class="pill">${s.status}</span></div></div><button class="btn danger" onclick="deleteSession('${s.dbId}')">Delete</button></div>`).join(''):`<div class="notice">No sessions found.</div>`}</div><div class="card" style="margin-top:18px"><h3>Video</h3><p class="muted">Future phase: connect a live camera stream, session recordings and optional AI highlight processing.</p></div>`}
 function mvpTable(){const tally=Object.entries(state.votes).sort((a,b)=>b[1]-a[1]),leader=tally[0];return `<table class="table"><thead><tr><th>Player</th><th>Votes</th><th>Status</th></tr></thead><tbody>${tally.map(([n,v])=>`<tr><td><b>${n}</b></td><td>${v}</td><td>${leader&&leader[0]===n?'Leading':''}</td></tr>`).join('')}</tbody></table><div style="margin-top:14px"><div class="label">Manager MVP selection</div><select class="input" id="mvpSelect"><option value="">Use peer-vote leader</option>${Object.keys(state.votes).map(n=>`<option ${state.managerOverride===n?'selected':''}>${n}</option>`).join('')}</select><button class="btn green" style="margin-top:10px" onclick="publishMVP()">Publish MVP</button></div>${state.publishedMVP?`<div class="success" style="margin-top:12px">Published MVP: <b>${state.publishedMVP}</b></div>`:''}`}
 function rewardsInfo(){return `<div class="modal-backdrop"><div class="modal"><div class="modal-head"><h2>How rewards work</h2><button class="icon-btn" onclick="closeModal()">×</button></div><div class="reward-explain"><div class="big-number">1</div><div><b>1 point = $1</b><p class="muted">Kids earn points for attendance, effort, teamwork and achievements. Points can be spent on rewards set by the manager.</p></div></div><button class="btn green" style="width:100%" onclick="closeModal()">Got it</button></div></div>`}
 function spendModal(){return `<div class="modal-backdrop"><div class="modal"><div class="modal-head"><div><span class="pill">Spend points</span><h2>${state.rewardPoints} points available</h2></div><button class="icon-btn" onclick="closeModal()">×</button></div><div class="catalog">${state.rewards.map(r=>`<button class="reward-card" onclick="buyReward(${r.id})">${r.image?`<img src="${r.image}"/>`:'<div class="reward-icon">🎁</div>'}<div><b>${r.name}</b><p class="small muted">${r.description}</p></div><strong>${r.cost} pts</strong></button>`).join('')}</div></div></div>`}
@@ -197,90 +104,16 @@ function deselectProgram(){state.selectedProgram=null;state.selectedSlot=null;sa
 function openPrivacy(){state.parentName=document.getElementById('parent').value||'Sarah';state.childName=document.getElementById('child').value||'Alex';state.email=document.getElementById('email').value;state.phone=document.getElementById('phone').value;state.privacyOpen=true;state.consent=false;save();render()}
 function closePrivacy(){state.privacyOpen=false;render()}
 function continueToPayment(){if(!state.consent)return;state.privacyOpen=false;save();render();toast('Ready for secure payment checkout.')} 
-function completePurchase(){state.paid=true;state.attendance=0;save();toast('Demo payment recorded — welcome to The Daily Roll!');setView('parent')}
+function completePurchase(){state.paid=true;const pr=currentTrackedProgram();if(pr){state.attendance=0;state.totalSessions=pr.sessions||state.totalSessions;const key=String(programDbId(pr));state.attendanceByProgram[key]={attended:0,paybackIssued:false,payoutDestination:state.economics||'parent'};}save();toast('Demo enrollment recorded — payment integration is the remaining step.');setView('parent')}
 function castVote(name){if(state.userVote)return;state.userVote=name;render()}
 function submitVote(){if(!state.userVote)return toast('Pick a teammate first.');state.votes[state.userVote]++;save();toast(`Vote recorded for ${state.userVote}`);render()}
 function publishMVP(){const val=document.getElementById('mvpSelect').value,tally=Object.entries(state.votes).sort((a,b)=>b[1]-a[1]);state.managerOverride=val||null;state.publishedMVP=val||(tally[0]&&tally[0][1]>0?tally[0][0]:null);save();toast('MVP published');render()}
 function setEconomics(v){state.economics=v;save();toast(`Payment preference saved: ${v==='kid'?'kid':'parent'}`)}
-function adjustAttendance(){state.attendance=Math.min(state.totalSessions,state.attendance+1);state.rewardPoints+=50;state.ledger.push({date:'Today',description:'Attendance bonus',amount:50,type:'earned'});save();toast('Attendance +1 and 50 points added');render()}
+function adjustAttendance(){const pr=currentTrackedProgram();if(!pr)return toast('No program available.');const a=attendanceProgress(pr);setProgramAttendance(pr,Math.min(a.total,a.attended+1),'manager');}
 function addProgram(){const name=document.getElementById('mName').value.trim();if(!name)return toast('Enter a program name.');const venue=document.getElementById('mVenue').value.trim()||'Location TBD',price=Number(document.getElementById('mPrice').value)||500,schedule=document.getElementById('mSchedule').value.trim()||'Schedule TBD';state.programs.push({id:Date.now(),name,sport:document.getElementById('mSport').value.trim()||'Sports',sessions:8,price,venue,details:'Manager-created program.',slots:[{id:'slot-'+Date.now(),label:schedule,spots:10,capacity:10}]});save();toast('Program added to the public page');render()}
 let rewardImage='';function previewRewardImage(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{rewardImage=r.result};r.readAsDataURL(f)}
-function addReward(){const name=document.getElementById('rName').value.trim();if(!name)return toast('Enter a reward name.');state.rewards.push({id:Date.now(),name,description:document.getElementById('rDesc').value.trim()||'Reward',cost:Number(document.getElementById('rCost').value)||1,image:rewardImage});rewardImage='';save();toast('Reward added');render()}
+async function addReward(){const name=document.getElementById('rName')?.value.trim();if(!name)return toast('Enter a reward name.');if(!state.authUser||state.authRole!=='manager')return toast('Manager must be logged in.');const reward={name,description:document.getElementById('rDesc')?.value.trim()||'Reward',cost:Number(document.getElementById('rCost')?.value)||1,active:true,manager_id:state.authUser.id};if(supabaseClient){const q=await supabaseClient.from('rewards').insert(reward).select('id,name,description,cost,active,manager_id').single();if(q.error)return toast('Could not add reward: '+q.error.message);state.rewards.push({...q.data,id:Date.now(),dbId:q.data.id,image:rewardImage});}else state.rewards.push({id:Date.now(),...reward,image:rewardImage});rewardImage='';saveLocalOnly();toast('Reward added to this manager catalog');render()}
 function buyReward(id){const r=state.rewards.find(x=>x.id===id);if(!r)return;if(state.rewardPoints<r.cost)return toast('Not enough points.');state.rewardPoints-=r.cost;state.ledger.push({date:'Today',description:`Reward purchase — ${r.name}`,amount:-r.cost,type:'spent'});save();toast(`${r.name} purchased`);render()}
-function showSessionForm(){
-  const form=document.getElementById('sessionForm');
-  if(form) form.style.display='block';
-}
-
-function hideSessionForm(){
-  const form=document.getElementById('sessionForm');
-  if(form) form.style.display='none';
-}
-
-async function createSession(){
-  const name=document.getElementById('sName').value.trim();
-  const programId=document.getElementById('sProgram').value;
-  const venueName=document.getElementById('sVenue').value.trim();
-  const date=document.getElementById('sDate').value;
-  const start=document.getElementById('sStart').value;
-  const end=document.getElementById('sEnd').value;
-  const status=document.getElementById('sStatus').value;
-  const maxPlayers=Number(document.getElementById('sMaxPlayers').value)||12;
-  const description=document.getElementById('sDescription').value.trim();
-
-  if(!name)return toast('Enter a session name.');
-  if(!date)return toast('Choose a session date.');
-  if(!start)return toast('Choose a start time.');
-  if(!end)return toast('Choose an end time.');
-
-  if(!supabaseClient){
-    return toast('Supabase is not connected.');
-  }
-
-  const selectedProgram=state.programs.find(p=>String(p.dbId||p.id)===String(programId));
-
-  const {data,error}=await supabaseClient
-    .from('sessions')
-    .insert([{
-      name,
-      sport:selectedProgram?.sport||'Sports',
-      session_date:date,
-      start_time:start,
-      end_time:end,
-      status,
-      description,
-      max_players:maxPlayers,
-      program_id:selectedProgram?.dbId||null,
-      venue_id:null
-    }])
-    .select()
-    .single();
-
-  if(error){
-    console.error(error);
-    return toast('Could not create session: '+error.message);
-  }
-
-  state.sessions=state.sessions||[];
-  state.sessions.unshift({
-    id:data.id,
-    dbId:data.id,
-    name:data.name,
-    sport:data.sport||'',
-    date:data.session_date,
-    start:data.start_time||'',
-    end:data.end_time||'',
-    status:data.status,
-    description:data.description||'',
-    maxPlayers:data.max_players||0,
-    program:selectedProgram?.name||'Unassigned',
-    venue:venueName||'Venue TBD'
-  });
-
-  saveLocalOnly();
-  toast('Session created');
-  render();
-}
 async function deleteSession(id){
   const session=state.sessions?.find(s=>s.dbId===id);
   if(!session)return;
@@ -299,8 +132,194 @@ function resetDemo(){localStorage.removeItem('dailyRollMVP');location.reload()}
 function setView(v){state.view=v;save();render();window.scrollTo({top:0,behavior:'smooth'})}
 function renderModalSpecial(){if(state.privacyOpen==='rewards')return rewardsInfo();if(state.privacyOpen==='spend')return spendModal();return null}
 const oldRender=render;render=function(){document.getElementById('app').innerHTML=shell(state.view==='sales'?sales():state.view==='parent'?parent():state.view==='kid'?kid():manager())+(renderModalSpecial()||'')};
-render();
 
+// Start Supabase and restore the signed-in account.
+(async function boot(){
+  render();
+  await initSupabase();
+  if(supabaseClient){
+    const {data}=await supabaseClient.auth.getSession();
+    if(data?.session?.user){ await setAuthenticatedUser(data.session.user); render(); } else { state.authUser=null; state.authRole=null; }
+    supabaseClient.auth.onAuthStateChange(async (_event,session)=>{
+      if(session?.user && !state.authUser){ await setAuthenticatedUser(session.user); render(); }
+    });
+  }
+})();
 
-// Start Supabase after the initial UI is available.
-initSupabase();
+// ---- Clean product flow / auth / program management v3 ----
+state.expandedPrograms = state.expandedPrograms || {};
+state.authMode = state.authMode || null;
+state.authUser = state.authUser || null;
+state.authRole = state.authRole || null;
+state.enrolledPrograms = state.enrolledPrograms || [];
+state.children = state.children || [];
+
+function publicPrograms(){
+  return (state.programs||[]).filter(p=>p.name!=='Saturday Soccer — U10');
+}
+function authButtons(){
+  if(state.authUser) return `<span class="small" style="color:#dbe6f6">${state.authUser.email||''}</span><button class="btn light" onclick="logout()">Log out</button>`;
+  return `<button class="btn light" onclick="openAuth('login')">Log in</button><button class="btn green" onclick="openAuth('register')">Register</button>`;
+}
+function shell(content){return `<header class="topbar"><div class="brand"><div class="brand-mark">⚽</div>The Daily Roll</div><nav class="nav">${state.authUser?['parent','kid',...(state.authRole==='manager'?['manager']:[])].map(v=>`<button class="${state.view===v?'active':''}" onclick="setView('${v}')">${v[0].toUpperCase()+v.slice(1)} View</button>`).join(''):''}<button class="${state.view==='sales'?'active':''}" onclick="setView('sales')">Join a Program</button></nav><div style="display:flex;align-items:center;gap:8px">${authButtons()}</div></header><main class="wrap">${content}</main><div class="footer">The Daily Roll • Play • Improve • Earn</div>${state.privacyOpen===true?privacyModal():''}${renderModalSpecial()||''}${state.authMode?authModal():''}`}
+render=function(){
+  let content;
+  if((state.view==='parent'||state.view==='kid'||state.view==='manager')&&!state.authUser) content=authRequired();
+  else content=state.view==='sales'?sales():state.view==='parent'?parent():state.view==='kid'?kid():manager();
+  document.getElementById('app').innerHTML=shell(content);
+}
+function authRequired(){return `<div class="card" style="max-width:620px;margin:50px auto;text-align:center"><span class="pill">Account required</span><h2>Log in to The Daily Roll</h2><p class="muted">Parents and managers have their own secure views. Kid access is managed through the parent account.</p><div class="button-row"><button class="btn blue" onclick="openAuth('login')">Log in</button><button class="btn green" onclick="openAuth('register')">Create account</button></div></div>`}
+function authModal(){
+ const reg=state.authMode==='register';
+ return `<div class="modal-backdrop"><div class="modal"><div class="modal-head"><div><span class="pill">The Daily Roll account</span><h2>${reg?'Create your account':'Welcome back'}</h2></div><button class="icon-btn" onclick="closeAuth()">×</button></div>${reg?`<div class="notice" style="margin-bottom:16px"><b>Parent registration</b><div class="small" style="margin-top:4px">Manager accounts are created privately by the owner/admin. They are not available for public registration.</div></div>`:''}<div class="label">Email</div><input class="input" id="authEmail" type="email" placeholder="you@example.com"><div class="label" style="margin-top:12px">Password</div><input class="input" id="authPassword" type="password" placeholder="At least 6 characters">${reg?`<div class="label" style="margin-top:12px">Name</div><input class="input" id="authName" placeholder="Your name">`:''}<button class="btn ${reg?'green':'blue'}" style="width:100%;margin-top:18px" onclick="${reg?'registerAccount()':'loginAccount()'}">${reg?'Create account':'Log in'}</button><p class="small muted" style="margin-top:12px">${reg?'You can add children and programs after creating your parent account.':'Use the email and password you registered with.'}</p></div></div>`;
+}
+function openAuth(mode){state.authMode=mode;state.authRole=mode==='register'?'parent':null;render()}
+function closeAuth(){state.authMode=null;render()}
+async function registerAccount(){
+ if(!supabaseClient)return toast('Supabase is not connected.');
+ const email=document.getElementById('authEmail').value.trim(); const password=document.getElementById('authPassword').value; const name=document.getElementById('authName').value.trim(); const role='parent';
+ if(!email||!password||password.length<6||!name)return toast('Enter your name, email and a password of at least 6 characters.');
+ const {data,error}=await supabaseClient.auth.signUp({email,password});
+ if(error)return toast(error.message);
+ if(!data.user)return toast('Account created. Check your email to finish registration.');
+ const {error:profileError}=await supabaseClient.from('profiles').upsert({id:data.user.id,name,role},{onConflict:'id'});
+ if(profileError)return toast('Account created, but profile setup failed: '+profileError.message);
+ if(data.session?.user){state.authUser=data.user;state.authRole=role;state.parentName=name;state.email=email;state.authMode=null;state.view=role==='manager'?'manager':'parent';saveLocalOnly();await loadUserData();render();toast('Account created');}else{state.authMode=null;render();toast('Account created. Check your email to confirm the account, then log in.');}
+}
+async function loginAccount(){
+ if(!supabaseClient)return toast('Supabase is not connected.');
+ const email=document.getElementById('authEmail').value.trim(); const password=document.getElementById('authPassword').value;
+ if(!email||!password)return toast('Enter your email and password.');
+ const {data,error}=await supabaseClient.auth.signInWithPassword({email,password});
+ if(error)return toast(error.message);
+ await setAuthenticatedUser(data.user);state.authMode=null;render();
+}
+async function setAuthenticatedUser(user){
+ state.authUser=user; state.email=user.email||'';
+ const {data:profile}=await supabaseClient.from('profiles').select('id,name,role,email').eq('id',user.id).maybeSingle();
+ state.authRole=profile?.role||'parent'; state.parentName=profile?.name||user.email?.split('@')[0]||'Parent';
+ state.view=state.authRole==='manager'?'manager':'parent'; await loadUserData();saveLocalOnly();
+}
+async function loadUserData(){
+ if(!supabaseClient||!state.authUser)return;
+ try{
+   if(state.authRole==='manager'){
+     const q=await supabaseClient.from('programs').select('id,name,sport,sessions,price,attendance_payback,schedule,details,spots,venue_id,manager_id,venues(name)').eq('manager_id',state.authUser.id).order('created_at');
+     if(!q.error){state.programs=(q.data||[]).filter(p=>p.name!=='Saturday Soccer — U10').map((p,i)=>({id:i+1,dbId:p.id,managerId:p.manager_id,name:p.name,sport:p.sport,sessions:p.sessions||8,price:Number(p.price||0),attendancePayback:Number(p.attendance_payback||0),venue:p.venues?.name||'Venue TBD',details:p.details||'',slots:[{id:'db-'+p.id,label:p.schedule||'Schedule to be announced',spots:p.spots??0,capacity:p.spots??0}]}));}
+     let r=await supabaseClient.from('rewards').select('id,name,description,cost,icon,image_url,manager_id').eq('active',true).eq('manager_id',state.authUser.id).order('created_at');
+     if(!r.error)state.rewards=(r.data||[]).map((x,i)=>({id:i+1,dbId:x.id,name:x.name,description:x.description||'',cost:x.cost,icon:x.icon||'🎁',image:x.image_url||''}));
+   }
+   if(state.authRole==='parent'){
+     const {data:links}=await supabaseClient.from('parent_children').select('child_id').eq('parent_id',state.authUser.id);
+     const ids=(links||[]).map(x=>x.child_id);
+     if(ids.length){
+       const {data:children}=await supabaseClient.from('children').select('id,name,photo_url').in('id',ids); state.children=children||[]; state.childName=state.children[0]?.name||state.childName;
+       const {data:enroll}=await supabaseClient.from('program_children').select('program_id,child_id').in('child_id',ids); state.enrolledPrograms=[...(enroll||[])];
+     }
+   }
+ }catch(err){console.warn('User data load skipped.',err)}
+}
+async function logout(){if(supabaseClient)await supabaseClient.auth.signOut();state.authUser=null;state.authRole=null;state.children=[];state.enrolledPrograms=[];state.view='sales';saveLocalOnly();render();toast('Logged out')}
+function toggleProgram(id){state.expandedPrograms[id]=!state.expandedPrograms[id];render()}
+function enrolledForChild(childId){return (state.enrolledPrograms||[]).filter(x=>String(x.child_id)===String(childId)).map(x=>String(x.program_id));}
+function isEnrolled(programId,childId){return enrolledForChild(childId).includes(String(programId))}
+async function enrollInProgram(programId){
+ if(!state.authUser)return openAuth('login');
+ if(state.authRole!=='parent')return toast('Programs are enrolled through a parent account.');
+ const child=state.children[0]; if(!child)return toast('Add a child to your parent account first.');
+ const pid=state.programs.find(p=>p.id===programId)?.dbId||programId;
+ if(isEnrolled(pid,child.id))return toast('This child is already enrolled in the program.');
+ if(!supabaseClient)return toast('Supabase is not connected.');
+ const {error}=await supabaseClient.from('program_children').insert({program_id:pid,child_id:child.id});
+ if(error)return toast('Could not enroll: '+error.message);
+ state.enrolledPrograms.push({program_id:pid,child_id:child.id});saveLocalOnly();toast('Program added to your child');render();
+}
+async function addChild(){
+ if(!state.authUser||state.authRole!=='parent')return;
+ const name=prompt('Child name'); if(!name)return;
+ const {data:child,error}=await supabaseClient.from('children').insert({name}).select('id,name,photo_url').single();
+ if(error)return toast('Could not add child: '+error.message);
+ const {error:linkError}=await supabaseClient.from('parent_children').insert({parent_id:state.authUser.id,child_id:child.id});
+ if(linkError)return toast('Child created but parent link failed: '+linkError.message);
+ state.children.push(child);state.childName=child.name;saveLocalOnly();toast('Child added');render();
+}
+function programSummary(pr,childId){const enrolled=isEnrolled(pr.dbId||pr.id,childId);return `<div class="card" style="margin-bottom:10px"><button class="program-collapse" onclick="toggleProgram('${pr.id}')"><span><b>${pr.name}</b><span class="small muted">${pr.sessions} sessions • ${money(pr.price)} • ${pr.venue} • ${money(programAttendanceTotal(pr))} attendance payback</span><span class="pill" style="margin-top:6px;display:inline-block">Manager: ${pr.managerName||'Program manager'}</span></span><span>${state.expandedPrograms[pr.id]?'−':'+'}</span></button>${state.expandedPrograms[pr.id]?`<div class="program-expanded"><p>${pr.details}</p><div class="statrow"><span>Manager</span><b>${pr.managerName||'Program manager'}</b></div><div class="statrow"><span>Schedule</span><b>${pr.slots?.[0]?.label||pr.schedule||'Schedule TBD'}</b></div><div class="statrow"><span>Enrollment</span><b>${enrolled?'Registered':'Not registered'}</b></div>${childId?`<button class="btn ${enrolled?'light':'green'}" ${enrolled?'disabled':''} onclick="enrollInProgram(${pr.id})">${enrolled?'Registered':'Add to program'}</button>`:''}</div>`:''}</div>`}
+function sales(){const programs=publicPrograms();return `<section class="hero"><div><span class="pill">Kids sports programs</span><h1>Kids play.<br>Kids improve.<br>Kids earn.</h1><p>Choose a program, create your parent account, and add your child when you're ready.</p><button class="btn green" onclick="document.getElementById('programs').scrollIntoView({behavior:'smooth'})">See available programs</button></div><div class="hero-card"><div class="small">THE DAILY ROLL</div><div class="price">Play • Improve • Earn</div><p>Programs, attendance, reward wallets and session history in one place.</p></div></section><div id="programs" class="section-title"><div><h2>Choose your program</h2><span class="muted">Programs start collapsed. Open one to see schedule and location.</span></div>${state.authUser&&state.authRole==='parent'?'<button class="btn light" onclick="setView(\'parent\')">My programs</button>':''}</div>${programs.length?programs.map(pr=>programSummary(pr,state.children[0]?.id)).join(''):'<div class="notice">No public programs are currently available.</div>'}`}
+function parent(){const kids=state.children.length?state.children:[{id:null,name:state.childName}];return `<div class="section-title"><div><span class="pill">Parent portal</span><h2>Welcome, ${state.parentName} 👋</h2></div><div class="button-row"><button class="btn light" onclick="addChild()">+ Add child</button><button class="btn light" onclick="setView('sales')">Browse programs</button></div></div>${kids.map(child=>{const enrolledIds=enrolledForChild(child.id);const enrolled=publicPrograms().filter(p=>enrolledIds.includes(String(p.dbId||p.id)));return `<div class="card" style="margin-bottom:18px"><button class="program-collapse" onclick="toggleProgram('child-'+child.id)"><span><b>${child.name}</b><span class="small muted">${enrolled.length} program${enrolled.length===1?'':'s'}</span></span><span>${state.expandedPrograms['child-'+child.id]?'−':'+'}</span></button>${state.expandedPrograms['child-'+child.id]?`<div class="program-expanded">${enrolled.length?enrolled.map(pr=>programSummary(pr,child.id)).join(''):'<div class="notice">This child is not registered in a program yet.</div>'}<div class="grid compact"><div class="card"><b>Schedule</b><p class="muted">Upcoming sessions</p></div><div class="card"><b>History</b><p class="muted">Completed sessions</p></div><div class="card"><b>Rewards</b><p>${state.rewardPoints} points</p></div><div class="card"><b>Videos</b><p class="muted">Session recordings</p></div><div class="card"><b>Accomplishments</b><p class="muted">Progress and badges</p></div></div></div>`:''}</div>`}).join('')}`}
+function kid(){return `<div class="section-title"><div><span class="pill">Kid view</span><h2>Hey ${state.childName}! 👋</h2><p class="muted">Your programs, schedule, rewards and session activity.</p></div></div><div class="card"><button class="program-collapse" onclick="toggleProgram('kid-programs')"><span><b>My programs</b><span class="small muted">${state.enrolledPrograms.length} registered</span></span><span>${state.expandedPrograms['kid-programs']?'−':'+'}</span></button>${state.expandedPrograms['kid-programs']?`<div class="program-expanded">${publicPrograms().filter(p=>state.enrolledPrograms.some(x=>String(x.program_id)===String(p.dbId||p.id))).map(p=>programSummary(p,state.children[0]?.id)).join('')||'<div class="notice">No programs are registered yet.</div>'}<div class="grid compact"><div class="card"><b>Schedule</b><p class="muted">Upcoming sessions</p></div><div class="card"><b>History</b><p class="muted">Completed sessions</p></div><div class="card"><b>Rewards</b><p>${state.rewardPoints} ⭐</p></div><div class="card"><b>Videos</b><p class="muted">Session videos</p></div><div class="card"><b>Accomplishments</b><p class="muted">Badges and milestones</p></div></div></div>`:''}</div><div class="grid"><div class="card checkin-card"><h3>Today's check-in</h3><div class="big-check">✓</div><b>${state.childName} is checked in</b><button class="btn light" onclick="toast('Check-in saved for the current session.')">Check in / out</button></div><div class="card"><h3>Rewards wallet</h3><div class="money">${state.rewardPoints} ⭐</div><p class="muted">1 point = $1</p><button class="btn green" onclick="openSpend()">Spend points</button></div><div class="card"><h3>🏆 MVP voting</h3><p class="muted">Vote for the teammate who tried the hardest today.</p>${state.players.filter(x=>x.name!==state.childName).map(x=>`<button class="vote-card ${state.userVote===x.name?'selected':''}" onclick="castVote('${x.name}')"><b>${x.name}</b></button>`).join('')}<button class="btn blue" style="margin-top:12px;width:100%" ${state.userVote?'disabled':''} onclick="submitVote()">Submit vote</button></div></div>`}
+function parseScheduleInput(raw){
+ const text=String(raw||'').trim(); const low=text.toLowerCase();
+ const dayMap={sun:0,sunday:0,sundays:0,mon:1,monday:1,mondays:1,tue:2,tues:2,tuesday:2,tuesdays:2,wed:3,wednesday:3,wednesdays:3,thu:4,thur:4,thurs:4,thursday:4,thursdays:4,fri:5,friday:5,fridays:5,sat:6,saturday:6,saturdays:6};
+ let day=null; for(const k of Object.keys(dayMap)){if(new RegExp('\\b'+k+'\\b').test(low)){day=dayMap[k];break;}}
+ const range=low.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|—|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+ if(day===null||!range)return null; let [,h1,m1,ap1,h2,m2,ap2]=range; m1=m1||'00';m2=m2||'00'; if(!ap1&&!ap2){const n=Number(h1); if(n>=1&&n<=7){ap1='pm';ap2='pm';} else {ap1='am';ap2='am';}} else {ap1=ap1||ap2;ap2=ap2||ap1;}
+ const norm=(h,m,ap)=>{h=Number(h);if(ap){if(ap==='pm'&&h<12)h+=12;if(ap==='am'&&h===12)h=0;}return String(h).padStart(2,'0')+':'+m;};
+ return {day,start:norm(h1,m1,ap1),end:norm(h2,m2,ap2),label:text};
+}
+function nextDateOnWeekday(startDate,weekday){const d=new Date(startDate+'T12:00:00');d.setDate(d.getDate()+((weekday-d.getDay()+7)%7));return d;}
+function parseHolidayDates(raw){return new Set(String(raw||'').split(/[\s,;]+/).map(x=>x.trim()).filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(x)));}
+function schedulePreview(){const p=parseScheduleInput(document.getElementById('mSchedule')?.value),count=Math.max(1,Math.min(52,Number(document.getElementById('mSessionCount')?.value)||8)),first=document.getElementById('mFirstDate')?.value,holidays=parseHolidayDates(document.getElementById('mHolidays')?.value);if(!p||!first)return '<div class="notice">Enter a schedule such as <b>Tuesday 5–6 PM</b> and choose a first date. Common formats are accepted.</div>';let d=nextDateOnWeekday(first,p.day),dates=[],guard=0;while(dates.length<count&&guard<370){const iso=d.toISOString().slice(0,10);if(!holidays.has(iso))dates.push(iso);d.setDate(d.getDate()+7);guard++;}return `<div class="success"><b>${dates.length} sessions</b> will be created • ${dates[0]} → ${dates[dates.length-1]}${holidays.size?` • ${holidays.size} blackout date${holidays.size===1?'':'s'}`:''}</div>`;}
+function refreshSchedulePreview(){const el=document.getElementById('schedulePreview');if(el)el.innerHTML=schedulePreview();}
+function programDbId(pr){return pr?.dbId||pr?.id||null;}
+function programAttendanceTotal(pr){return Math.max(0,Number(pr?.attendancePayback||0));}
+function attendanceRecord(pr){const key=String(programDbId(pr)||'demo');if(!state.attendanceByProgram)state.attendanceByProgram={};const rec=state.attendanceByProgram[key]||{};return {attended:Math.max(0,Number(rec.attended||0)),paybackIssued:!!rec.paybackIssued,payoutDestination:rec.payoutDestination||state.economics||'parent',lastUpdated:rec.lastUpdated||null};}
+function attendanceProgress(pr){const rec=attendanceRecord(pr);const total=Math.max(1,Number(pr?.sessions||state.totalSessions||1));return {attended:Math.min(rec.attended,total),total,payback:programAttendanceTotal(pr),qualified:rec.attended>=total,payoutIssued:rec.paybackIssued,destination:rec.payoutDestination};}
+function currentTrackedProgram(){return (state.programs||[]).find(p=>p.dbId&&state.enrolledPrograms?.some(x=>String(x.program_id)===String(p.dbId))) || (state.programs||[]).find(p=>p.dbId) || (state.programs||[])[0] || null;}
+function applyAttendancePayback(pr){
+ const prog=pr||currentTrackedProgram();if(!prog)return false;const key=String(programDbId(prog));const a=attendanceProgress(prog);
+ if(a.qualified&&!a.payoutIssued&&a.payback>0){
+   if(!state.attendanceByProgram)state.attendanceByProgram={};
+   state.attendanceByProgram[key]={attended:a.attended,paybackIssued:true,payoutDestination:state.economics||'parent',lastUpdated:new Date().toISOString()};
+   if((state.economics||'parent')==='kid'){
+     state.rewardPoints += a.payback;
+     state.ledger.push({date:'Today',description:`Attendance payback — ${prog.name}`,amount:a.payback,type:'earned'});
+   }
+   return true;
+ }
+ return false;
+}
+function setProgramAttendance(pr,attended,source='manager'){
+ const prog=pr||currentTrackedProgram();if(!prog)return toast('No program is available for attendance.');const total=Math.max(0,Number(prog.sessions||state.totalSessions||0));let n=Math.max(0,Math.min(total,Number(attended)||0));const key=String(programDbId(prog));const existing=attendanceRecord(prog);if(existing.paybackIssued){n=total;}
+ state.attendance=n;state.totalSessions=total||state.totalSessions;state.attendanceByProgram[key]={attended:n,paybackIssued:existing.paybackIssued,payoutDestination:existing.payoutDestination||state.economics||'parent',lastUpdated:new Date().toISOString()};
+ const paidNow=applyAttendancePayback(prog);saveLocalOnly();render();toast(paidNow?'Attendance updated — attendance payback automatically awarded.':`Attendance updated to ${n}/${total}.`);
+}
+function kidCheckIn(){
+ const prog=currentTrackedProgram();if(!prog)return toast('No program is enrolled.');const today=new Date().toISOString().slice(0,10);if(state.currentCheckinDate===today)return toast('This session is already checked in.');const a=attendanceProgress(prog);if(a.attended>=a.total)return toast('All program sessions are already marked attended.');state.currentCheckinDate=today;setProgramAttendance(prog,a.attended+1,'kid');}
+function managerProgramCard(pr){
+ const key='mgr-'+pr.id, sessions=(state.sessions||[]).filter(s=>String(s.programId||s.program)===String(pr.dbId||pr.id)), expanded=!!state.expandedPrograms[key], a=attendanceProgress(pr);
+ return `<div class="card" style="margin-bottom:10px"><button class="program-collapse" onclick="toggleProgram('${key}')"><span><b>${pr.name}</b><span class="small muted">${pr.sessions} sessions • ${money(pr.price)} • ${pr.venue} • ${money(programAttendanceTotal(pr))} attendance payback</span><span class="pill" style="margin-top:6px;display:inline-block">Manager: ${pr.managerName||state.parentName||'Program manager'}</span></span><span>${expanded?'−':'+'}</span></button>${expanded?`<div class="program-expanded"><p>${pr.details||'No description yet.'}</p><div class="statrow"><span>Schedule</span><b>${pr.slots?.[0]?.label||pr.schedule||'Schedule TBD'}</b></div><div class="statrow"><span>Planned sessions</span><b>${pr.sessions}</b></div><div class="statrow"><span>Generated sessions</span><b>${sessions.length}</b></div><div class="statrow"><span>Attendance payback</span><b>${money(a.payback)} ${a.payback?'total':'(not allocated)'}</b></div><div class="statrow"><span>Attendance status</span><b>${a.attended}/${a.total}${a.payoutIssued?' • Payback awarded':' • Payback pending'}</b></div><div class="statrow"><span>Payout destination</span><b>${a.destination==='kid'?'Kid wallet':'Parent'}</b></div><div class="notice" style="margin:12px 0"><b>Attendance control</b><div class="small muted" style="margin-top:4px">Set the child's attended-session count here when you need to correct attendance manually. Reaching full attendance automatically awards the manager's allocated payback.</div><div class="button-row" style="margin-top:10px"><input class="input" id="attendance-${pr.id}" type="number" min="0" max="${a.total}" value="${a.attended}" style="max-width:130px"><button class="btn green" onclick="setProgramAttendance(${pr.id},document.getElementById('attendance-${pr.id}').value,'manager')">Save attendance</button><button class="btn light" onclick="setProgramAttendance(${pr.id},${a.total},'manager')">Mark all attended</button></div></div><button class="btn blue" onclick="generateSessions(${pr.id})">Generate sessions</button><div class="catalog" style="margin-top:14px">${sessions.map(s=>`<div class="session-admin-row"><div><b>${s.name}</b><div class="small muted">${s.date} • ${s.start}–${s.end} • ${s.venue}</div></div><span class="pill">${s.status}</span></div>`).join('')||'<div class="notice">No sessions generated yet.</div>'}</div></div>`:''}</div>`;
+}
+
+function manager(){
+ const programs=(state.programs||[]).filter(p=>p.name!=='Saturday Soccer — U10');
+ return `<div class="section-title"><div><span class="pill">Owner / manager</span><h2>Program Builder</h2><p class="muted">Programs are permanent offerings. Sessions are generated underneath them.</p></div><button class="btn green" onclick="showProgramForm()">+ Add Program</button></div>
+ <div id="programForm" class="card" style="display:none;margin-bottom:18px"><h3>New program</h3><div class="formgrid">
+ <div><div class="label">Program name</div><input class="input" id="mName" placeholder="Tuesday Skills — U8/U10"></div><div><div class="label">Sport</div><input class="input" id="mSport" placeholder="Soccer"></div>
+ <div><div class="label">Location</div><input class="input" id="mVenue" placeholder="Burlington Indoor Field"></div><div><div class="label">Price</div><input class="input" id="mPrice" type="number" value="500" min="0"></div><div><div class="label">Attendance payback</div><input class="input" id="mAttendancePayback" type="number" value="100" min="0"><div class="small muted" style="margin-top:5px">Total amount the manager allocates back for completing the attendance requirement. Example: $100 back on full attendance.</div></div>
+ <div><div class="label">Number of sessions</div><input class="input" id="mSessionCount" type="number" value="8" min="1" max="52" oninput="refreshSchedulePreview()"></div><div><div class="label">First session date</div><input class="input" id="mFirstDate" type="date" value="${new Date().toISOString().slice(0,10)}" onchange="refreshSchedulePreview()"></div>
+ <div class="full"><div class="label">Schedule</div><input class="input" id="mSchedule" placeholder="Tuesday 5–6 PM" oninput="refreshSchedulePreview()"><div class="small muted" style="margin-top:5px">Forgiving input: “Tuesday 5–6 PM”, “Tuesdays 5:00–6:00 PM”, “Tue 17:00–18:00”, etc.</div></div>
+ <div class="full"><div class="label">Holidays / blackout dates</div><input class="input" id="mHolidays" placeholder="2026-10-13, 2026-11-10" oninput="refreshSchedulePreview()"><div class="small muted" style="margin-top:5px">Enter any holiday, facility closure or other blackout dates. They are skipped automatically, and the schedule continues until the requested number of actual sessions is reached.</div></div>
+ <div class="full"><div class="label">Description</div><textarea class="input" id="mDetails" rows="3" placeholder="Technical skills, movement and game play."></textarea></div><div class="full" id="schedulePreview">${schedulePreview()}</div></div>
+ <div class="button-row"><button class="btn green" onclick="addProgram()">Create program</button><button class="btn light" onclick="hideProgramForm()">Cancel</button></div></div>
+ ${programs.length?programs.map(managerProgramCard).join(''):'<div class="notice">No programs created yet. Use <b>+ Add Program</b> to start.</div>'}${rewardManager()}`;
+}
+
+function rewardManager(){return `<div class="card" style="margin-top:20px"><h3>My Reward Catalog</h3><p class="muted">This catalog belongs to the signed-in manager. Rewards can include a picture, description and points cost.</p><div class="formgrid"><div><div class="label">Reward</div><input class="input" id="rName" placeholder="Sports Drink"></div><div><div class="label">Points cost</div><input class="input" id="rCost" type="number" value="5"></div><div class="full"><div class="label">Description</div><input class="input" id="rDesc" placeholder="Cold drink after practice"></div><div class="full"><div class="label">Picture</div><input class="input" id="rImage" type="file" accept="image/*" onchange="previewRewardImage(event)"></div></div><button class="btn green" style="margin-top:12px" onclick="addReward()">Add reward</button><div class="catalog">${(state.rewards||[]).map(r=>`<div class="catalog-row">${r.image?`<img src="${r.image}"/>`:'<div class="thumb">🎁</div>'}<div><b>${r.name}</b><div class="small muted">${r.description}</div></div><strong>${r.cost} pts</strong></div>`).join('')||'<div class="notice">No rewards in this catalog yet.</div>'}</div></div>`}
+function showProgramForm(){const x=document.getElementById('programForm');if(x)x.style.display='block'}
+function hideProgramForm(){const x=document.getElementById('programForm');if(x)x.style.display='none'}
+async function addProgram(){
+ const name=document.getElementById('mName')?.value.trim();if(!name)return toast('Enter a program name.');const scheduleText=document.getElementById('mSchedule')?.value.trim(),parsed=parseScheduleInput(scheduleText);if(!parsed)return toast('Enter a schedule like Tuesday 5–6 PM.');
+ const firstDate=document.getElementById('mFirstDate')?.value,count=Math.max(1,Math.min(52,Number(document.getElementById('mSessionCount')?.value)||8));if(!firstDate)return toast('Choose the first session date.');
+ const holidays=[...parseHolidayDates(document.getElementById('mHolidays')?.value)],sport=document.getElementById('mSport')?.value.trim()||'Sports',venue=document.getElementById('mVenue')?.value.trim()||'Location TBD',price=Number(document.getElementById('mPrice')?.value)||0,attendancePayback=Math.max(0,Number(document.getElementById('mAttendancePayback')?.value)||0),details=document.getElementById('mDetails')?.value.trim()||'';
+ if(!supabaseClient||!state.authUser||state.authRole!=='manager')return toast('Manager must be logged in.');const scheduleLabel=`${scheduleText} • ${count} sessions${holidays.length?` • skips ${holidays.join(', ')}`:''}`;
+ const q=await supabaseClient.from('programs').insert({name,sport,sessions:count,price,attendance_payback:attendancePayback,schedule:scheduleLabel,details,spots:12,manager_id:state.authUser.id}).select('id,name,sport,sessions,price,attendance_payback,schedule,details,spots,venue_id,manager_id').single();
+ if(q.error)return toast('Could not create program: '+q.error.message);const d=q.data;state.programs.push({id:Date.now(),dbId:d.id,managerId:d.manager_id||state.authUser.id,name:d.name,sport:d.sport,sessions:d.sessions||count,price:Number(d.price||0),attendancePayback:Number(d.attendance_payback||0),venue,details:d.details||'',slots:[{id:'db-'+d.id,label:scheduleLabel,spots:d.spots||12,capacity:d.spots||12}]});hideProgramForm();saveLocalOnly();toast('Program created');render();}
+async function generateSessions(pid){
+ const p=state.programs.find(x=>x.id===pid);if(!p||!supabaseClient)return toast('Program or Supabase connection missing.');const parsed=parseScheduleInput(p.slots?.[0]?.label||p.schedule||'');if(!parsed)return toast('This program needs a readable schedule before sessions can be generated.');
+ const existing=(state.sessions||[]).filter(s=>String(s.programId||s.program)===String(p.dbId||p.id)); if(existing.length>=(p.sessions||8))return toast(`This program already has ${existing.length} sessions. No duplicates were created.`); const first=prompt('First session date (YYYY-MM-DD)',new Date().toISOString().slice(0,10));if(!first)return;const embedded=(p.slots?.[0]?.label||'').match(/skips (.*)$/i);const holidayText=embedded?embedded[1]:prompt('Holiday / blackout dates, comma-separated (YYYY-MM-DD). These dates will be skipped.','');const holidays=parseHolidayDates(holidayText),rows=[],existingDates=new Set(existing.map(s=>s.date));let d=nextDateOnWeekday(first,parsed.day),guard=0;
+ while(existing.length+rows.length<(p.sessions||8)&&guard<370){const iso=d.toISOString().slice(0,10);if(!holidays.has(iso)&&!existingDates.has(iso))rows.push({name:p.name,sport:p.sport,session_date:iso,start_time:parsed.start,end_time:parsed.end,status:'committed',description:p.details,max_players:p.slots?.[0]?.capacity||12,program_id:p.dbId||null,venue_id:null});d.setDate(d.getDate()+7);guard++;}
+ if(existing.length+rows.length<(p.sessions||8))return toast('Could not create the requested number of sessions.');if(!rows.length)return toast('No new sessions were needed.');const {data,error}=await supabaseClient.from('sessions').insert(rows).select();if(error)return toast('Could not generate sessions: '+error.message);
+ state.sessions=[...(state.sessions||[]),...(data||[]).map(s=>({id:s.id,dbId:s.id,name:s.name,sport:s.sport,date:s.session_date,start:s.start_time,end:s.end_time,status:s.status,description:s.description,maxPlayers:s.max_players,programId:s.program_id,program:p.name,venue:p.venue}))];saveLocalOnly();toast(`${data.length} sessions created; blackout dates were skipped.`);render();}
+function programSummary(pr,childId){const enrolled=isEnrolled(pr.dbId||pr.id,childId);return `<div class="card" style="margin-bottom:10px"><button class="program-collapse" onclick="toggleProgram('${pr.id}')"><span><b>${pr.name}</b><span class="small muted">${pr.sessions} sessions • ${money(pr.price)} • ${pr.venue} • ${money(programAttendanceTotal(pr))} attendance payback</span><span class="pill" style="margin-top:6px;display:inline-block">Manager: ${pr.managerName||'Program manager'}</span></span><span>${state.expandedPrograms[pr.id]?'−':'+'}</span></button>${state.expandedPrograms[pr.id]?`<div class="program-expanded"><p>${pr.details||''}</p><div class="statrow"><span>Manager</span><b>${pr.managerName||'Program manager'}</b></div><div class="statrow"><span>Schedule</span><b>${pr.slots?.[0]?.label||pr.schedule||'Schedule TBD'}</b></div><div class="statrow"><span>Attendance payback</span><b>${money(programAttendanceTotal(pr))} on full attendance</b></div><div class="statrow"><span>Status</span><b>${enrolled?'Registered':'Available'}</b></div>${childId?`<button class="btn ${enrolled?'light':'green'}" ${enrolled?'disabled':''} onclick="enrollInProgram(${pr.id})">${enrolled?'Registered':'Add to program'}</button>`:''}${childId&&enrolled?`<div class="grid compact" style="margin-top:16px"><div class="card"><b>Schedule</b><p class="muted">Upcoming sessions</p></div><div class="card"><b>History</b><p class="muted">Completed sessions</p></div><div class="card"><b>Rewards</b><p>${state.rewardPoints} points</p></div><div class="card"><b>Videos</b><p class="muted">Session recordings</p></div><div class="card"><b>Accomplishments</b><p class="muted">Progress and badges</p></div></div>`:''}</div>`:''}</div>`}
+function parent(){const kids=state.children.length?state.children:[{id:null,name:state.childName}];return `<div class="section-title"><div><span class="pill">Parent portal</span><h2>Welcome, ${state.parentName} 👋</h2></div><div class="button-row"><button class="btn light" onclick="addChild()">+ Add child</button><button class="btn light" onclick="setView('sales')">Browse programs</button></div></div>${kids.map(child=>{const enrolledIds=enrolledForChild(child.id);const enrolled=publicPrograms().filter(p=>enrolledIds.includes(String(p.dbId||p.id)));return `<div class="card" style="margin-bottom:18px"><button class="program-collapse" onclick="toggleProgram('child-'+child.id)"><span><b>${child.name}</b><span class="small muted">${enrolled.length} program${enrolled.length===1?'':'s'}</span></span><span>${state.expandedPrograms['child-'+child.id]?'−':'+'}</span></button>${state.expandedPrograms['child-'+child.id]?`<div class="program-expanded">${enrolled.length?enrolled.map(pr=>programSummary(pr,child.id)).join(''):'<div class="notice">This child is not registered in a program yet.</div>'}</div>`:''}</div>`}).join('')}`}
+function kid(){const enrolled=publicPrograms().filter(p=>state.enrolledPrograms.some(x=>String(x.program_id)===String(p.dbId||p.id)));const attendancePoints=Math.min(state.attendance,state.totalSessions)*50;const spentPoints=Math.abs((state.ledger||[]).filter(x=>x.type==='spent').reduce((a,x)=>a+x.amount,0));return `<div class="section-title"><div><span class="pill">Kid view</span><h2>Hey ${state.childName}! 👋</h2><p class="muted">Your programs, schedule, rewards and session activity.</p></div></div><div class="card"><button class="program-collapse" onclick="toggleProgram('kid-programs')"><span><b>My programs</b><span class="small muted">${enrolled.length} registered</span></span><span>${state.expandedPrograms['kid-programs']?'−':'+'}</span></button>${state.expandedPrograms['kid-programs']?`<div class="program-expanded">${enrolled.map(p=>programSummary(p,state.children[0]?.id)).join('')||'<div class="notice">No programs are registered yet.</div>'}</div>`:''}</div><div class="grid"><div class="card checkin-card"><h3>Today's check-in</h3><div class="big-check">✓</div><b>${state.childName} is checked in</b><div class="statrow" style="margin-top:10px"><span>Attendance</span><b>${state.attendance}/${state.totalSessions}</b></div><button class="btn light" onclick="toast('Check-in saved for the current session.')">Check in / out</button></div><div class="card"><h3>Rewards wallet</h3><div class="money">${state.rewardPoints} ⭐</div><p class="muted">1 point = $1</p><div class="statrow"><span>Attendance rewards</span><b>+${attendancePoints} ⭐</b></div><div class="small muted" style="margin-top:8px">${state.attendance} attended session${state.attendance===1?'':'s'} • attendance rewards are included in your wallet balance.</div><div class="small muted" style="margin-top:6px">Spent: ${spentPoints} ⭐</div><button class="btn green" style="margin-top:12px" onclick="openSpend()">Spend points</button></div><div class="card"><h3>🏆 MVP voting</h3><p class="muted">Vote for the teammate who tried the hardest today.</p>${state.players.filter(x=>x.name!==state.childName).map(x=>`<button class="vote-card ${state.userVote===x.name?'selected':''}" onclick="castVote('${x.name}')"><b>${x.name}</b></button>`).join('')}<button class="btn blue" style="margin-top:12px;width:100%" ${state.userVote?'disabled':''} onclick="submitVote()">Submit vote</button></div></div>`}
