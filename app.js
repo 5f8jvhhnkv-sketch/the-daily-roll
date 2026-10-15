@@ -488,7 +488,7 @@ async function deleteProgram(programRef){
  if(!state.authUser||!['manager','owner'].includes(state.authRole))return toast('Approved manager access is required.');
  const p=(state.programs||[]).find(x=>String(x.dbId||x.id)===String(programRef)||String(x.id)===String(programRef));
  if(!p)return toast('Program not found.');
- const pid=String(p.dbId||p.id||'');if(!isUuid(pid))return toast('This program is missing a valid database ID. Refresh the app and try again.');
+ const pid=String(p.dbId||'');if(!pid)return toast('This program is missing its database ID. Refresh the app and try again.');
  if(state.authRole==='manager'&&String(p.managerId)!==String(state.authUser.id))return toast('You can only delete your own programs.');
  const enrolled=(state.managerEnrollments||[]).filter(x=>String(x.program_id)===pid&&['active','pending_payment'].includes(String(x.enrollment_status||'active'))).length;
  const warn=enrolled?`\n\n${enrolled} ${enrolled===1?'child is':'children are'} currently enrolled and will no longer see this program.`:'';
