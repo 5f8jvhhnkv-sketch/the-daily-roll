@@ -1,0 +1,167 @@
+@@@PATCH cache-version
+@@@FIND
+const LOCAL_CACHE_VERSION='10.7.1';
+@@@REPLACE
+const LOCAL_CACHE_VERSION='10.8.0';
+@@@END
+
+@@@PATCH app-version
+@@@FIND
+const APP_VERSION = '10.7.1';
+@@@REPLACE
+const APP_VERSION = '10.8.0';
+@@@END
+
+@@@PATCH header-version
+@@@FIND
+<span class="small" style="opacity:.55">v10.7.1</span>
+@@@REPLACE
+<span class="small" style="opacity:.55">v10.8.0</span>
+@@@END
+
+@@@PATCH state-deleted-programs
+@@@FIND
+state.scheduleDraft=state.scheduleDraft||{}; state.locationSearch=state.locationSearch||[]; state.cacheVersion=LOCAL_CACHE_VERSION;
+@@@REPLACE
+state.scheduleDraft=state.scheduleDraft||{}; state.locationSearch=state.locationSearch||[]; state.cacheVersion=LOCAL_CACHE_VERSION; state.deletedPrograms=state.deletedPrograms||[];
+@@@END
+
+@@@PATCH public-programs-hide-deleted
+@@@FIND
+const q=await supabaseClient.from('programs').select('id,name,sport,sessions,price,attendance_payback,schedule,details,spots,venue_id,manager_id,rewards_enabled,venues(name,address)').order('created_at');
+@@@REPLACE
+const q=await supabaseClient.from('programs').select('id,name,sport,sessions,price,attendance_payback,schedule,details,spots,venue_id,manager_id,rewards_enabled,venues(name,address)').is('deleted_at',null).order('created_at');
+@@@END
+
+@@@PATCH manager-programs-query
+@@@FIND
+let pq=supabaseClient.from('programs').select('id,name,sport,sessions,price,attendance_payback,schedule,details,spots,venue_id,manager_id,rewards_enabled,venues(name,address)').order('created_at');
+@@@REPLACE
+let pq=supabaseClient.from('programs').select('id,name,sport,sessions,price,attendance_payback,schedule,details,spots,venue_id,manager_id,rewards_enabled,deleted_at,deleted_by,venues(name,address)').order('created_at');
+@@@END
+
+@@@PATCH manager-programs-split-deleted
+@@@FIND
+state.programs=(q.data||[]).map((p,i)=>{const dates=extractDatesFromSchedule(p.schedule);return {id:i+1,dbId:p.id,managerId:p.manager_id,venueId:p.venue_id||null,
+@@@REPLACE
+state.deletedPrograms=(q.data||[]).filter(p=>p.deleted_at).map(p=>({dbId:p.id,managerId:p.manager_id||null,deletedBy:p.deleted_by||null,deletedAt:p.deleted_at,name:p.name,schedule:String(p.schedule||'').split(' • ')[0]||'',venue:[p.venues?.name,p.venues?.address].filter(Boolean).join(' • ')||'Venue TBD'}));
+     state.programs=(q.data||[]).filter(p=>!p.deleted_at).map((p,i)=>{const dates=extractDatesFromSchedule(p.schedule);return {id:i+1,dbId:p.id,managerId:p.manager_id,venueId:p.venue_id||null,
+@@@END
+
+@@@PATCH delete-program-button
+@@@FIND
+<button class="btn blue" type="button" onclick="generateSessions(${pr.id})">Fill missing sessions</button>
+@@@REPLACE
+<button class="btn blue" type="button" onclick="generateSessions(${pr.id})">Fill missing sessions</button><button class="btn danger" type="button" onclick="deleteProgram('${esc(pid)}')">Delete program</button>
+@@@END
+
+@@@PATCH owner-history-panel
+@@@FIND
+${managerPayments()}${isOwner()?ownerPeoplePanel():''}
+@@@REPLACE
+${managerPayments()}${isOwner()?ownerProgramHistory():''}${isOwner()?ownerPeoplePanel():''}
+@@@END
+
+@@@PATCH new-program-functions
+@@@FIND
+function deleteSession(id){toast('Sessions are not deleted from the normal workflow. Mark the session cancelled instead.')}
+@@@REPLACE
+function deleteSession(id){toast('Sessions are not deleted from the normal workflow. Mark the session cancelled instead.')}
+async function deleteProgram(programRef){
+ if(!state.authUser||!['manager','owner'].includes(state.authRole))return toast('Approved manager access is required.');
+ const p=(state.programs||[]).find(x=>String(x.dbId||x.id)===String(programRef)||String(x.id)===String(programRef));
+ if(!p)return toast('Program not found.');
+ const pid=String(p.dbId||p.id||'');if(!isUuid(pid))return toast('This program is missing a valid database ID. Refresh the app and try again.');
+ if(state.authRole==='manager'&&String(p.managerId)!==String(state.authUser.id))return toast('You can only delete your own programs.');
+ const enrolled=(state.managerEnrollments||[]).filter(x=>String(x.program_id)===pid&&['active','pending_payment'].includes(String(x.enrollment_status||'active'))).length;
+ const warn=enrolled?`\n\n${enrolled} ${enrolled===1?'child is':'children are'} currently enrolled and will no longer see this program.`:'';
+ if(!confirm(`Delete “${p.name}”?${warn}\n\nIt stays in the owner's history and only the owner can restore it.`))return;
+ const q=await supabaseClient.from('programs').update({deleted_at:new Date().toISOString()}).eq('id',pid).is('deleted_at',null).select('id');
+ if(q.error)return toast('Could not delete program: '+q.error.message);
+ if(!q.data||!q.data.length)return toast('Could not delete program: the database did not allow it.');
+ state.expandedPrograms['mgr-'+pid]=false;
+ if(String(state.managerProgramId)===pid)state.managerProgramId=null;
+ await loadUserData();toast(`“${p.name}” was deleted.`);render();
+}
+async function restoreProgram(programId){
+ if(!isOwner())return toast('Owner access required.');
+ const r=(state.deletedPrograms||[]).find(x=>String(x.dbId)===String(programId));
+ if(!r)return toast('Program not found.');
+ if(!confirm(`Restore “${r.name}”? It will be visible to parents and its manager again.`))return;
+ const q=await supabaseClient.from('programs').update({deleted_at:null}).eq('id',r.dbId).select('id');
+ if(q.error)return toast('Could not restore program: '+q.error.message);
+ if(!q.data||!q.data.length)return toast('Could not restore program: the database did not allow it.');
+ await loadUserData();toast(`“${r.name}” was restored.`);render();
+}
+function ownerProgramHistory(){
+ const rows=(state.deletedPrograms||[]).slice().sort((a,b)=>String(b.deletedAt||'').localeCompare(String(a.deletedAt||'')));
+ const who=id=>{const x=(state.people||[]).find(p=>String(p.id)===String(id));return x?(x.name||x.email||'Unknown'):'Unknown'};
+ return `<div class="card" style="margin-top:18px"><div class="section-title" style="margin-bottom:12px"><div><span class="pill">Owner history</span><h3>Deleted programs</h3><p class="muted">Deleted programs stay here with their enrollments, payments and sessions intact. Parents and managers no longer see them.</p></div></div>${rows.length?`<table class="table"><thead><tr><th>Program</th><th>Manager</th><th>Deleted by</th><th>Deleted on</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td><b>${esc(r.name)}</b><div class="small muted">${esc(r.schedule||'')} • ${esc(r.venue)}</div></td><td>${esc(who(r.managerId))}</td><td>${esc(who(r.deletedBy))}</td><td>${r.deletedAt?esc(fmtDate(String(r.deletedAt).slice(0,10))):'—'}</td><td><button class="btn light" type="button" onclick="restoreProgram('${esc(r.dbId)}')">Restore</button></td></tr>`).join('')}</tbody></table>`:'<div class="notice">No deleted programs yet.</div>'}</div>`;
+}
+@@@DONEIF
+async function restoreProgram(programId){
+@@@END
+
+@@@PATCH fmt-month-year
+@@@FIND
+function fmtDate(iso){return new Intl.DateTimeFormat('en-CA',{month:'short',day:'numeric',year:'numeric'}).format(new Date(iso+'T12:00:00'))}
+@@@REPLACE
+function fmtDate(iso){return new Intl.DateTimeFormat('en-CA',{month:'short',day:'numeric',year:'numeric'}).format(new Date(iso+'T12:00:00'))}
+function fmtMonthYear(iso){const d=new Date(String(iso||'').slice(0,7)+'-01T12:00:00');return Number.isNaN(d.getTime())?'Not provided':new Intl.DateTimeFormat('en-CA',{month:'long',year:'numeric'}).format(d)}
+@@@END
+
+@@@PATCH child-modal-birth-month
+@@@FIND
+<div class="label" style="margin-top:12px">Birthday</div><input class="input" id="childDobForm" type="date" value="${esc(f.date_of_birth)}">
+@@@REPLACE
+<div class="label" style="margin-top:12px">Birth month and year</div><input class="input" id="childDobForm" type="month" value="${esc(String(f.date_of_birth||'').slice(0,7))}" max="${new Date().toISOString().slice(0,7)}" placeholder="YYYY-MM"><div class="small muted" style="margin-top:4px">Only the month and year are kept. Format: YYYY-MM.</div>
+@@@END
+
+@@@PATCH save-child-birth-month
+@@@FIND
+dob=document.getElementById('childDobForm')?.value||null,
+@@@REPLACE
+dobRaw=document.getElementById('childDobForm')?.value||'',dob=dobRaw?(/^\d{4}-(0[1-9]|1[0-2])$/.test(dobRaw)?dobRaw+'-01':'invalid'):null,
+@@@END
+
+@@@PATCH save-child-birth-month-message
+@@@FIND
+return toast('Enter a valid birthday.')
+@@@REPLACE
+return toast('Enter a valid birth month and year (YYYY-MM).')
+@@@END
+
+@@@PATCH parent-view-birth-month
+@@@FIND
+<div class="statrow"><span>Birthday</span><b>${child.date_of_birth?esc(fmtDate(child.date_of_birth)):'Not provided'}</b></div>
+@@@REPLACE
+<div class="statrow"><span>Birth month</span><b>${child.date_of_birth?esc(fmtMonthYear(child.date_of_birth)):'Not provided'}</b></div>
+@@@END
+
+@@@PATCH remove-child-detect-zero-rows
+@@@FIND
+const q=await supabaseClient.from('parent_children').delete().eq('parent_id',state.authUser.id).eq('child_id',id);if(q.error)return toast('Could not remove child: '+q.error.message);
+@@@REPLACE
+const q=await supabaseClient.from('parent_children').delete().eq('parent_id',state.authUser.id).eq('child_id',id).select('child_id');if(q.error)return toast('Could not remove child: '+q.error.message);if(!q.data||!q.data.length)return toast('Could not remove child: nothing was removed. Refresh the page and try again.');
+@@@END
+
+@@@PATCH delete-program-loose-id-check
+@@@FIND
+const pid=String(p.dbId||p.id||'');if(!isUuid(pid))return toast('This program is missing a valid database ID. Refresh the app and try again.');
+@@@REPLACE
+const pid=String(p.dbId||'');if(!pid)return toast('This program is missing its database ID. Refresh the app and try again.');
+@@@END
+
+@@@PATCH remove-child-rename-function
+@@@FIND
+async function removeChild(id){
+@@@REPLACE
+async function removeChildFromAccount(id){
+@@@END
+
+@@@PATCH remove-child-rename-onclick
+@@@FIND
+onclick="removeChild('${esc(child.id)}')"
+@@@REPLACE
+onclick="removeChildFromAccount('${esc(child.id)}')"
+@@@END
