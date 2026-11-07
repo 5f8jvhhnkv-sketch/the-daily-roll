@@ -56,13 +56,22 @@ function attendanceStateKey(pr,childId){return `${String(programDbId(pr)||pr?.id
 function computeLocalBalance(childId){return childLedger(childId).reduce((sum,row)=>sum+Number(row.amount||0),0)}
 function resetTransientRewardImage(){rewardImageFile=null;state.rewardImagePreview=''}
 
+// A password-reset link can open in a different browser or app than the one that asked for it (typical on phones).
+// So reset emails use a link type that carries everything it needs, and we read it here, once, as the page loads.
+const RECOVERY_LINK=(function(){try{
+  const h=new URLSearchParams(String(location.hash||'').replace(/^#/,'')),q=new URLSearchParams(location.search);
+  if(h.get('type')==='recovery'&&h.get('access_token'))return {access_token:h.get('access_token'),refresh_token:h.get('refresh_token')||''};
+  if(q.get('type')==='recovery'&&q.get('token_hash'))return {token_hash:q.get('token_hash')};
+}catch(_e){}return null})();
+function cleanAddressBar(){try{history.replaceState({},'',location.pathname)}catch(_e){}}
 function detectEmailReturn(){
   try{
     const u=new URL(location.href),h=new URLSearchParams(String(location.hash||'').replace(/^#/,''));
     const err=u.searchParams.get('error_description')||h.get('error_description');
-    const resetPending=localStorage.getItem('dr_reset_pending')==='1';
-    const isRecovery=h.get('type')==='recovery'||resetPending;
-    if(err&&!isRecovery){state.authMode='confirm';state.authError='That confirmation link has expired or was already used. If you already confirmed, just log in. Otherwise enter your email below and press “Resend the email”.';return;}
+    try{localStorage.removeItem('dr_reset_pending')}catch(_e){}
+    if(RECOVERY_LINK)return;
+    const isRecovery=h.get('type')==='recovery';
+    if(err&&!isRecovery){state.authMode='confirm';state.authError='That email link has expired or was already used. If you were resetting your password, close this and tap “Forgot password?” to get a new link. If you were confirming your email and already did, just log in; otherwise enter your email below and press “Resend the email”.';return;}
     if((u.searchParams.has('code')||h.get('type')==='signup'||h.has('access_token'))&&!isRecovery){
       state.emailReturn=true;
       // If the link was opened in a different browser or app than the one used to sign up, no login happens,
@@ -84,10 +93,24 @@ async function initSupabase(){
         state.authUser=session?.user||state.authUser; state.authMode='recovery'; state.authError=''; state.authMessage=''; render(); return;
       }
       if(event==='SIGNED_OUT'){ state.authUser=null; state.authRole=null; state.children=[]; state.enrolledPrograms=[]; state.authMode=null; render(); return; }
-      if(event==='SIGNED_IN' && session?.user && String(state.authUser?.id||'')!==String(session.user.id)){
+      if(event==='SIGNED_IN' && session?.user && state.authMode!=='recovery' && String(state.authUser?.id||'')!==String(session.user.id)){
         setTimeout(async()=>{ try{ if(String(state.authUser?.id||'')!==String(session.user.id)){ await setAuthenticatedUser(session.user); if(state.emailReturn){state.emailReturn=false;state.authMode='welcome';} render(); } }catch(err){ console.error(err); } },0);
       }
     });
+    if(RECOVERY_LINK){
+      try{
+        const r=RECOVERY_LINK.token_hash
+          ?await supabaseClient.auth.verifyOtp({token_hash:RECOVERY_LINK.token_hash,type:'recovery'})
+          :await supabaseClient.auth.setSession({access_token:RECOVERY_LINK.access_token,refresh_token:RECOVERY_LINK.refresh_token});
+        const user=r?.data?.session?.user||r?.data?.user;
+        if(r?.error||!user)throw new Error(r?.error?.message||'invalid link');
+        state.authUser=user;state.authMode='recovery';state.authError='';state.authMessage='';state.emailReturn=false;
+      }catch(e){
+        console.warn('Reset link could not be used:',e);
+        state.authMode='forgot';state.authError='That reset link has expired or was already used. Enter your email and send a new one.';
+      }
+      cleanAddressBar();render();
+    }
     await pullSupabaseData();
   } catch(err){ console.warn('Supabase connection failed; local demo mode remains available.', err); }
 }
@@ -297,10 +320,12 @@ async function sendPasswordReset(){
  if(!supabaseClient)return state.authError='Supabase is not connected.',render();
  const email=document.getElementById('authEmail')?.value.trim().toLowerCase(); state.authEmail=email||''; state.authError=''; state.authMessage='';
  if(!email)return state.authError='Enter the email address for your Daily Roll account.',render();
- try{localStorage.setItem('dr_reset_pending','1')}catch(_e){}
- const {error}=await supabaseClient.auth.resetPasswordForEmail(email,{redirectTo:authRedirectUrl()});
- if(error){state.authError=error.message;return render();}
- state.authMessage='Reset link sent. Check your email and open the link on the Daily Roll website.';
+ // A separate, temporary client makes the link self-contained, so it works on any phone, browser or email app.
+ let rc=supabaseClient;
+ try{rc=window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{flowType:'implicit',persistSession:false,autoRefreshToken:false,detectSessionInUrl:false,storageKey:'dr-reset-tmp'}})}catch(_e){rc=supabaseClient}
+ const {error}=await rc.auth.resetPasswordForEmail(email,{redirectTo:authRedirectUrl()});
+ if(error){state.authError=/rate limit/i.test(error.message||'')?'Too many emails were requested recently. Please wait about an hour, then try once more.':error.message;return render();}
+ state.authMessage='Reset link sent to '+email+'. Open it on any device, then choose your new password. It can take a few minutes to arrive; check spam too.';
  render();
 }
 async function finishPasswordReset(){
@@ -891,7 +916,7 @@ async function generateSessions(programRef){const p=(state.programs||[]).find(x=
 
 
 // ---- Canonical Daily Roll UI / behavior ----
-function shell(content){return `<header class="topbar"><div class="brand"><div class="brand-mark">⚽</div>The Daily Roll <span class="small" style="opacity:.55">v10.16.1</span></div><nav class="nav">${state.authUser?['parent','kid',...(state.authRole==='manager'||state.authRole==='owner'?['manager']:[])].map(v=>`<button class="${state.view===v?'active':''}" onclick="setView('${v}')">${v[0].toUpperCase()+v.slice(1)} View</button>`).join(''):''}<button class="${state.view==='sales'?'active':''}" onclick="setView('sales')">Join a Program</button></nav><div style="display:flex;align-items:center;gap:8px">${authButtons()}</div></header><main class="wrap">${simulationBar()}${content}</main><div class="footer">The Daily Roll • Play • Improve • Earn</div>${state.privacyOpen===true?privacyModal():''}${renderModalSpecial()||''}${state.childModalOpen?childModal():''}${state.authMode?authModal():''}${state.dropin?dropinModal():''}${state.kiosk?kioskScreen():''}`}
+function shell(content){return `<header class="topbar"><div class="brand"><div class="brand-mark">⚽</div>The Daily Roll <span class="small" style="opacity:.55">v10.16.2</span></div><nav class="nav">${state.authUser?['parent','kid',...(state.authRole==='manager'||state.authRole==='owner'?['manager']:[])].map(v=>`<button class="${state.view===v?'active':''}" onclick="setView('${v}')">${v[0].toUpperCase()+v.slice(1)} View</button>`).join(''):''}<button class="${state.view==='sales'?'active':''}" onclick="setView('sales')">Join a Program</button></nav><div style="display:flex;align-items:center;gap:8px">${authButtons()}</div></header><main class="wrap">${simulationBar()}${content}</main><div class="footer">The Daily Roll • Play • Improve • Earn</div>${state.privacyOpen===true?privacyModal():''}${renderModalSpecial()||''}${state.childModalOpen?childModal():''}${state.authMode?authModal():''}${state.dropin?dropinModal():''}${state.kiosk?kioskScreen():''}`}
 function render(){const root=document.getElementById('app');if(!root)return;let content;if(state.view==='manager'&&(!state.authUser||!(state.authRole==='manager'||state.authRole==='owner')))content=authRequired();else if((state.view==='parent'||state.view==='kid')&&!state.authUser)content=authRequired();else content=state.view==='sales'?sales():state.view==='parent'?parent():state.view==='kid'?kid():manager();root.innerHTML=shell(content)}
 function sales(){const programs=publicPrograms();return `<section class="hero"><div><span class="pill">Kids sports programs</span><h1>Kids play.<br>Kids improve.<br>Kids earn.</h1><p>Choose a program, see the manager, add your child and join.</p><button class="btn green" onclick="document.getElementById('programs').scrollIntoView({behavior:'smooth'})">See available programs</button></div><div class="hero-card"><div class="small">THE DAILY ROLL</div><div class="price">Play • Improve • Earn</div><p>Every program shows its manager. Each manager controls their own reward catalog.</p></div></section><div id="programs" class="section-title"><div><h2>Choose your program</h2><span class="muted">Programs are grouped by manager so parents know exactly who runs them.</span></div>${isParentLike()?'<button class="btn light" onclick="setView(\'parent\')">My children</button>':'<button class="btn light" onclick="openAuth(\'register\')">Register as parent</button>'}</div><div class="grid">${programs.length?programs.map(pr=>programSummary(pr,state.children[0]?.id)).join(''):'<div class="notice">No public programs are currently available.</div>'}</div>${state.selectedProgram?checkout(programs.find(p=>String(p.id)===String(state.selectedProgram)||String(p.dbId)===String(state.selectedProgram))||programs[0]):''}`}
 function parent(){
